@@ -23,8 +23,7 @@ class Camera():
         if ret:
             return frame
         else:
-            print('Camera frame not ready')
-            pass
+            raise ValueError('Camera not accessible') 
     def get_com(self, input_frame):
         # Convert from RGB to HSV, and blur to get rid of outliers
         hsv_frame = cv.cvtColor(input_frame, cv.COLOR_BGR2HSV)
@@ -40,11 +39,42 @@ class Camera():
         y = int(moment["m01"] / moment["m00"])
         # Return x, y (image coordinates of the center of the ball)
         return x, y
+    def calculate_pose(self, image_source='resources/Rotation_Calibration_Image.png', grid_size=(6, 9), square_size=0.054):
+        # Initialize variables
+        horizontal, vertical = grid_size
+        criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        object_points = np.zeros((horizontal*vertical, 3), np.float32)
+        object_points[:,:2] = np.mgrid[0:horizontal,0:vertical].T.reshape(-1,2) * square_size
+        # Get image and convert it to gray scale
+        image = cv.imread(image_source)
+        gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+        # Find the chess board corners
+        ret, corners = cv.findChessboardCorners(gray, (horizontal,vertical), None)
+        # If found, use object and image points to find the correcting rotation and translation        
+        if ret:
+            ret, rvecs, tvecs = cv.solvePnP(object_points, corners, self.camera_matrix, self.distortion_matrix)        
+            correcting_rotation_matrix, _ = cv.Rodrigues(rvecs)
+            correcting_translation_vector = tvecs.T
+            return correcting_rotation_matrix, correcting_translation_vector.T
+        else:
+            raise ValueError('Could not find the checkerboard to calculate correcting rotation and translation values') 
 
 
 class Stereo_Camera():
     def __init__(self, camera_sources, resolution):
-        # Initialize resolution
+        self.set_resolution(resolution)
+        # Initialize the two camera objects
+        self.left_camera = Camera(camera_sources[0], self.image_size[0], self.image_size[1])
+        self.right_camera = Camera(camera_sources[1], self.image_size[0], self.image_size[1])        
+        self.set_calibrated_parameters()    # Read camera parameters from the YML file        
+        self.create_undistortion_maps()     # Create undistortion maps that can be reused
+        # Correcting rotation and translation will be with respect to the left camera, as we use that as the primary camera
+        self.correcting_rotation_matrix, self.correcting_translation_vector = self.left_camera.calculate_pose()
+    def __del__(self):
+        del self.left_camera
+        del self.right_camera
+    def set_resolution(self, resolution):
+        # Initialize resolution-based variables
         if resolution == 1080:
             resolution_horizontal = 1920
             resolution_vertical = 1080
@@ -55,15 +85,6 @@ class Stereo_Camera():
             # Raise an exception so that the object isn't created if a bad resolution is entered
             raise ValueError('Please enter a correct resolution of 1080 or 720') 
         self.image_size = (resolution_horizontal, resolution_vertical)
-        # Initialize the two camera objects
-        self.left_camera = Camera(camera_sources[0], resolution_horizontal, resolution_vertical)
-        self.right_camera = Camera(camera_sources[1], resolution_horizontal, resolution_vertical)        
-        self.set_calibrated_parameters()    # Read camera parameters from the YML file        
-        self.create_undistortion_maps()     # Create undistortion maps that can be reused
-        # Also find correcting translation and rotational matrices, and correct position for them as in the project
-    def __del__(self):
-        del self.left_camera
-        del self.right_camera
     def set_calibrated_parameters(self):
         temp_file_stream = cv.FileStorage('C:/Developer/Jupyter/ComputerVisionTrial/CalibrationResults.yml', cv.FILE_STORAGE_READ)
         self.camera_matrix_1 = temp_file_stream.getNode("cameraMatrix1").mat()
@@ -80,6 +101,10 @@ class Stereo_Camera():
         self.p_2 = temp_file_stream.getNode("P2").mat()
         self.q = temp_file_stream.getNode("Q").mat()
         temp_file_stream.release()
+        self.left_camera.camera_matrix = self.camera_matrix_1
+        self.left_camera.distortion_matrix = self.distortion_matrix_1
+        self.right_camera.camera_matrix = self.camera_matrix_2
+        self.right_camera.distortion_matrix = self.distortion_matrix_2
     def create_undistortion_maps(self):
         self.left_map_x, self.left_map_y = cv.initUndistortRectifyMap(self.camera_matrix_1, self.distortion_matrix_1, self.rot_1, self.p_1, self.image_size, cv.CV_32FC1)
         self.right_map_x, self.right_map_y = cv.initUndistortRectifyMap(self.camera_matrix_2, self.distortion_matrix_2, self.rot_2, self.p_2, self.image_size, cv.CV_32FC1)
@@ -95,32 +120,14 @@ class Stereo_Camera():
     def get_raw_position(self, left_com, right_com):
         position = cv.triangulatePoints( self.p_1, self.p_2, left_com, right_com)
         position /= position[3]
-        return [float(position[0]), float(position[1]), float(position[2])]
+        return np.array([[float(position[0])], [float(position[1])], [float(position[2])]])
+    def correct_position_for_rotation(self, raw_position):
+        result = raw_position - self.correcting_translation_vector        
+        result = self.correcting_rotation_matrix.T @ result
+        return result
 
 
 def main():
-    # Single camera test
-    # camera = Camera('resources/CutVideoLeft.mp4', 1920, 1080)
-    # frame = camera.get_frame()
-    # while frame is not None:
-    #     cv.imshow('Test', frame)
-    #     if cv.waitKey(10) & 0xFF == ord('q'):     # Stop Video by pressing 'q'
-    #         break    
-    #     frame = camera.get_frame()
-
-    # # Stereo camera test
-    # stereo_camera = Stereo_Camera(['resources/CutVideoLeft.mp4', 'resources/CutVideoRight.mp4'], 1080) 
-    # left_frame, right_frame = stereo_camera.get_undistorted_frames()
-    # while left_frame is not None and right_frame is not None:
-    #     cv.imshow('Left Feed', left_frame)
-    #     cv.imshow('Right Feed', right_frame)
-    #     if cv.waitKey(10) & 0xFF == ord('q'):     # Stop Video by pressing 'q'
-    #         break    
-    #     left_frame, right_frame = stereo_camera.get_frames()
-    # cv.destroyAllWindows()
-    # del stereo_camera
-
-    # Ball tracking test
     stereo_camera = Stereo_Camera(['resources/CutVideoLeft.mp4', 'resources/CutVideoRight.mp4'], 1080) 
     left_frame, right_frame = stereo_camera.get_undistorted_frames()
     while left_frame is not None and right_frame is not None:
@@ -133,7 +140,8 @@ def main():
             break    
         left_frame, right_frame = stereo_camera.get_frames()
         ball_raw_positon = stereo_camera.get_raw_position(left_com, right_com)
-        print(ball_raw_positon)
+        ball_corrected_position = stereo_camera.correct_position_for_rotation(ball_raw_positon)
+        print(ball_corrected_position)
     cv.destroyAllWindows()
     del stereo_camera
 
