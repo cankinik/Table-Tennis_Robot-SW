@@ -26,20 +26,25 @@ class Camera():
             print('Camera frame not ready')
             pass
     def get_com(self, input_frame):
+        # Convert from RGB to HSV, and blur to get rid of outliers
         hsv_frame = cv.cvtColor(input_frame, cv.COLOR_BGR2HSV)
         blurred_hsv_frame = cv.blur(hsv_frame, (1, 1))
         # The HSV threshold values are hard-coded right now. Might want to change that later on
         hsv_lower_treshold_for_pingpong_ball = np.array([8, 160, 160])
         hsv_upper_treshold_for_pingpong_ball = np.array([22, 255, 255])
+        # Mask anything that is not inside HSV range to only leave the ball
         masked_frame = cv.inRange(blurred_hsv_frame, hsv_lower_treshold_for_pingpong_ball, hsv_upper_treshold_for_pingpong_ball)
+        # Calculate the center of mass of the left out pixels (everything except ball should be masked out) to find center of ball. 
         moment = cv.moments(masked_frame, bool(0))
         x = int(moment["m10"] / moment["m00"])
         y = int(moment["m01"] / moment["m00"])
+        # Return x, y (image coordinates of the center of the ball)
         return x, y
 
 
 class Stereo_Camera():
     def __init__(self, camera_sources, resolution):
+        # Initialize resolution
         if resolution == 1080:
             resolution_horizontal = 1920
             resolution_vertical = 1080
@@ -50,10 +55,11 @@ class Stereo_Camera():
             # Raise an exception so that the object isn't created if a bad resolution is entered
             raise ValueError('Please enter a correct resolution of 1080 or 720') 
         self.image_size = (resolution_horizontal, resolution_vertical)
+        # Initialize the two camera objects
         self.left_camera = Camera(camera_sources[0], resolution_horizontal, resolution_vertical)
-        self.right_camera = Camera(camera_sources[1], resolution_horizontal, resolution_vertical)
-        self.set_calibrated_parameters()
-        self.create_undistortion_maps()
+        self.right_camera = Camera(camera_sources[1], resolution_horizontal, resolution_vertical)        
+        self.set_calibrated_parameters()    # Read camera parameters from the YML file        
+        self.create_undistortion_maps()     # Create undistortion maps that can be reused
         # Also find correcting translation and rotational matrices, and correct position for them as in the project
     def __del__(self):
         del self.left_camera
@@ -86,6 +92,10 @@ class Stereo_Camera():
         # Return COM of ball from hsv masking and moment com finding
     def get_coms(self, left_frame, right_frame):
         return self.left_camera.get_com(left_frame), self.right_camera.get_com(right_frame)
+    def get_raw_position(self, left_com, right_com):
+        position = cv.triangulatePoints( self.p_1, self.p_2, left_com, right_com)
+        position /= position[3]
+        return [float(position[0]), float(position[1]), float(position[2])]
 
 
 def main():
@@ -122,6 +132,8 @@ def main():
         if cv.waitKey(10) & 0xFF == ord('q'):     # Stop Video by pressing 'q'
             break    
         left_frame, right_frame = stereo_camera.get_frames()
+        ball_raw_positon = stereo_camera.get_raw_position(left_com, right_com)
+        print(ball_raw_positon)
     cv.destroyAllWindows()
     del stereo_camera
 
