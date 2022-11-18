@@ -1,6 +1,7 @@
 import cv2 as cv
 import numpy as np
 import yaml
+import glob
 
 class Camera():
     def __init__(self, camera_source, resolution_vertical, resolution_horizontal):
@@ -58,6 +59,37 @@ class Camera():
             return correcting_rotation_matrix, correcting_translation_vector.T
         else:
             raise ValueError('Could not find the checkerboard to calculate correcting rotation and translation values') 
+    def calculate_calibration_parameters(self, calibration_image_glob_path='resources/Calibration_Images/*.png', square_size=0.054):
+        # TODO: Code from another project. Change the few bits so that it is consistent with the rest of the project. Also, this is for single camera, make the version for stereo
+        # Calculate the intrinsic parameters of the camera
+        criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        # Horizontal and vertical are flipped, but lazy. The numbers must be exact, and they are the corners inside, not outside
+        horizontal = 7 
+        vertical = 4
+        objp = np.zeros((horizontal*vertical,3), np.float32)
+        objp[:,:2] = np.mgrid[0:horizontal,0:vertical].T.reshape(-1,2) * square_size
+
+        # Arrays to store object points and image points from all the images.
+        objpoints = [] # 3d point in real world space
+        imgpoints = [] # 2d points in image plane.
+        images = glob.glob(calibration_image_glob_path)
+        for fname in images:
+            img = cv.imread(fname)
+            gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+            # Find the chess board corners
+            ret, corners = cv.findChessboardCorners(gray, (horizontal,vertical), None)
+            # If found, add object points, image points (after refining them)
+            if ret == True:
+                objpoints.append(objp)
+                corners2 = cv.cornerSubPix(gray,corners, (11,11), (-1,-1), criteria)
+                imgpoints.append(corners)
+                # Draw and display the corners
+                cv.drawChessboardCorners(img, (horizontal,vertical), corners2, ret)
+                cv.imshow('img', img)
+                cv.waitKey(200)
+        cv.destroyAllWindows()
+        ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
+        mapx, mapy = cv.initUndistortRectifyMap(mtx, dist, None, mtx, (1280,720), cv.CV_32FC1)
 
 
 class Stereo_Camera():
@@ -66,7 +98,7 @@ class Stereo_Camera():
         # Initialize the two camera objects
         self.left_camera = Camera(camera_sources[0], self.image_size[0], self.image_size[1])
         self.right_camera = Camera(camera_sources[1], self.image_size[0], self.image_size[1])        
-        self.set_calibrated_parameters()    # Read camera parameters from the YML file        
+        self.set_calibration_parameters()    # Read camera parameters from the YML file        
         self.create_undistortion_maps()     # Create undistortion maps that can be reused
         # Correcting rotation and translation will be with respect to the left camera, as we use that as the primary camera
         self.correcting_rotation_matrix, self.correcting_translation_vector = self.left_camera.calculate_pose()
@@ -85,7 +117,8 @@ class Stereo_Camera():
             # Raise an exception so that the object isn't created if a bad resolution is entered
             raise ValueError('Please enter a correct resolution of 1080 or 720') 
         self.image_size = (resolution_horizontal, resolution_vertical)
-    def set_calibrated_parameters(self):
+
+    def set_calibration_parameters(self):
         temp_file_stream = cv.FileStorage('C:/Developer/Jupyter/ComputerVisionTrial/CalibrationResults.yml', cv.FILE_STORAGE_READ)
         self.camera_matrix_1 = temp_file_stream.getNode("cameraMatrix1").mat()
         self.distortion_matrix_1 = temp_file_stream.getNode("distCoeffs1").mat()
